@@ -752,10 +752,11 @@ def test_scan_directory_path():
             Global("bdb", "Bdb.run", SafetyLevel.Dangerous),
             Global("builtins", "exec", SafetyLevel.Dangerous),
             Global("builtins", "eval", SafetyLevel.Dangerous),
+            Global("builtins", "eval", SafetyLevel.Dangerous),
         ],
-        scanned_files=32,
-        issues_count=32,
-        infected_files=27,
+        scanned_files=33,
+        issues_count=33,
+        infected_files=28,
         scan_err=True,
     )
     compare_scan_results(scan_directory_path(f"{_root_path}/data/"), sr)
