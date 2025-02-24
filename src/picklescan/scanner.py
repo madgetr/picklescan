@@ -1,3 +1,4 @@
+import struct
 from dataclasses import dataclass
 from enum import Enum
 import http.client
@@ -11,6 +12,7 @@ from tempfile import TemporaryDirectory
 from typing import IO, List, Optional, Set, Tuple
 import urllib.parse
 import zipfile
+from zipfile import _SharedFile, sizeFileHeader, structFileHeader, stringFileHeader
 
 from .torch import (
     get_magic_number,
@@ -351,23 +353,32 @@ def scan_7z_bytes(data: IO[bytes], file_id) -> ScanResult:
 
 def scan_zip_bytes(data: IO[bytes], file_id) -> ScanResult:
     result = ScanResult([])
+    contents = data.read()
+    try:
+        with zipfile.ZipFile(io.BytesIO(contents), "r") as zip:
+            file_names = zip.namelist()
+            _log.debug("Files in zip archive %s: %s", file_id, file_names)
+            for file_name in file_names:
+                file_ext = os.path.splitext(file_name)[1]
+                if file_ext in _pickle_file_extensions:
+                    _log.debug("Scanning file %s in zip archive %s", file_name, file_id)
+                    with zip.open(file_name, "r") as file:
+                        result.merge(scan_pickle_bytes(file, f"{file_id}:{file_name}"))
+                elif file_ext in _numpy_file_extensions:
+                    _log.debug("Scanning file %s in zip archive %s", file_name, file_id)
+                    with zip.open(file_name, "r") as file:
+                        result.merge(scan_numpy(file, f"{file_id}:{file_name}"))
+    except zipfile.BadZipFile as e:
+        msg = str(e)
+        if "File name in directory" in msg:
+            file_a = msg.split("File name in directory ")[1].split(" ")[0].replace("'", "")
+            file_b = msg.split(" and header b")[1].split(" ")[0].replace("'", "")
+            print("Attempting to repair the zip file by replacing", file_b, "with", file_a)
 
-    with zipfile.ZipFile(data, "r") as zip:
-        file_names = zip.namelist()
-        _log.debug("Files in zip archive %s: %s", file_id, file_names)
-        for file_name in file_names:
-            file_ext = os.path.splitext(file_name)[1]
-            if file_ext in _pickle_file_extensions:
-                _log.debug("Scanning file %s in zip archive %s", file_name, file_id)
-                with zip.open(file_name, "r") as file:
-                    result.merge(scan_pickle_bytes(file, f"{file_id}:{file_name}"))
-            elif file_ext in _numpy_file_extensions:
-                _log.debug("Scanning file %s in zip archive %s", file_name, file_id)
-                with zip.open(file_name, "r") as file:
-                    result.merge(scan_numpy(file, f"{file_id}:{file_name}"))
-
+            repaired = contents.replace(file_b.encode(), file_a.encode(), 1)
+            return scan_zip_bytes(io.BytesIO(repaired), file_id)
+        return ScanResult([], scan_err=True)
     return result
-
 
 def scan_numpy(data: IO[bytes], file_id) -> ScanResult:
     # Delay import to avoid dependency on NumPy
