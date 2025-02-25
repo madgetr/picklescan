@@ -196,6 +196,22 @@ def initialize_zip_file(path, file_name, data):
         with zipfile.ZipFile(path, "w") as zip:
             zip.writestr(file_name, data)
 
+def initialize_corrupt_zip_file(path, file_name, data):
+    if not os.path.exists(path):
+        with zipfile.ZipFile(path, "w") as zip:
+            zip.writestr(file_name, data)
+
+        with open(path, "rb") as f:
+            data = f.read()
+
+        # Replace only the first occurrence of "data.pkl" with "datap.kl"
+        modified_data = data.replace(b"data.pkl", b"datap.kl", 1)
+
+        # Write back the modified content
+        with open(path, "wb") as f:
+            f.write(modified_data)
+
+
 
 def initialize_numpy_files():
     import numpy as np
@@ -423,6 +439,11 @@ def initialize_pickle_files():
         "data.pkl",
         pickle.dumps(Malicious1(), protocol=4),
     )
+    initialize_corrupt_zip_file(
+        f"{_root_path}/data/malicious_corrupt1.zip",
+        "data.pkl",
+        pickle.dumps(Malicious1(), protocol=4),
+    )
 
     # Fake PyTorch file (PNG file format) simulating https://huggingface.co/RectalWorm/loras_new/blob/main/Owl_Mage_no_background.pt
     initialize_data_file(f"{_root_path}/data/bad_pytorch.pt", b"\211PNG\r\n\032\n")
@@ -573,6 +594,9 @@ def test_scan_file_path():
     )
     compare_scan_results(
         scan_file_path(f"{_root_path}/data/malicious1.zip"), malicious1
+    )
+    compare_scan_results(
+        scan_file_path(f"{_root_path}/data/malicious_corrupt1.zip"), malicious1
     )
 
     malicious2 = ScanResult([Global("posix", "system", SafetyLevel.Dangerous)], 1, 1, 1)

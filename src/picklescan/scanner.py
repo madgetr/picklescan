@@ -155,6 +155,7 @@ _pytorch_file_extensions = {".bin", ".pt", ".pth", ".ckpt"}
 _pickle_file_extensions = {".pkl", ".pickle", ".joblib", ".dat", ".data"}
 _zip_file_extensions = {".zip", ".npz", ".7z"}
 
+_pickle_magic_numbers = {b"\x80\x00", b"\x80\x01", b"\x80\x02", b"\x80\x03", b"\x80\x04", b"\x80\x05"}
 
 def _is_7z_file(f: IO[bytes]) -> bool:
     read_bytes = []
@@ -349,11 +350,11 @@ def scan_7z_bytes(data: IO[bytes], file_id) -> ScanResult:
 
             return result
 
-def get_magic_numbers(zip: zipfile.ZipFile, num_bytes=8):
+def get_magic_numbers_from_zipfile(zip: zipfile.ZipFile, num_bytes=8):
     magic_numbers = {}
     for file_info in zip.infolist():
         with zip.open(file_info.filename) as f:
-            magic_numbers[file_info.filename] = f.read(num_bytes)  # Read first N bytes and convert to hex
+            magic_numbers[file_info.filename] = f.read(num_bytes)
 
     return magic_numbers
 
@@ -361,17 +362,17 @@ def scan_zip_bytes(data: IO[bytes], file_id) -> ScanResult:
     result = ScanResult([])
 
     with ForgivingZipFile(data, "r") as zip:
-        magic_numbers = get_magic_numbers(zip)
+        magic_numbers = get_magic_numbers_from_zipfile(zip)
         file_names = zip.namelist()
         _log.debug("Files in zip archive %s: %s", file_id, file_names)
         for file_name in file_names:
             magic_number = magic_numbers.get(file_name, b"")
-            print(magic_number)
-            if magic_number.startswith(b'\x80'):
+            file_ext = os.path.splitext(file_name)[1]
+            if file_ext in _pickle_file_extensions or any(magic_number.startswith(mn) for mn in _pickle_magic_numbers):
                 _log.debug("Scanning file %s in zip archive %s", file_name, file_id)
                 with zip.open(file_name, "r") as file:
                     result.merge(scan_pickle_bytes(file, f"{file_id}:{file_name}"))
-            elif magic_number.startswith(b"\x93NUMPY"):
+            elif file_ext in _numpy_file_extensions or magic_number.startswith(b"\x93NUMPY"):
                 _log.debug("Scanning file %s in zip archive %s", file_name, file_id)
                 with zip.open(file_name, "r") as file:
                     result.merge(scan_numpy(file, f"{file_id}:{file_name}"))
