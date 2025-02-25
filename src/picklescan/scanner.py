@@ -349,20 +349,29 @@ def scan_7z_bytes(data: IO[bytes], file_id) -> ScanResult:
 
             return result
 
+def get_magic_numbers(zip: zipfile.ZipFile, num_bytes=8):
+    magic_numbers = {}
+    for file_info in zip.infolist():
+        with zip.open(file_info.filename) as f:
+            magic_numbers[file_info.filename] = f.read(num_bytes)  # Read first N bytes and convert to hex
+
+    return magic_numbers
 
 def scan_zip_bytes(data: IO[bytes], file_id) -> ScanResult:
     result = ScanResult([])
 
     with ForgivingZipFile(data, "r") as zip:
+        magic_numbers = get_magic_numbers(zip)
         file_names = zip.namelist()
         _log.debug("Files in zip archive %s: %s", file_id, file_names)
         for file_name in file_names:
-            file_ext = os.path.splitext(file_name)[1]
-            if file_ext in _pickle_file_extensions:
+            magic_number = magic_numbers.get(file_name, b"")
+            print(magic_number)
+            if magic_number.startswith(b'\x80'):
                 _log.debug("Scanning file %s in zip archive %s", file_name, file_id)
                 with zip.open(file_name, "r") as file:
                     result.merge(scan_pickle_bytes(file, f"{file_id}:{file_name}"))
-            elif file_ext in _numpy_file_extensions:
+            elif magic_number.startswith(b"\x93NUMPY"):
                 _log.debug("Scanning file %s in zip archive %s", file_name, file_id)
                 with zip.open(file_name, "r") as file:
                     result.merge(scan_numpy(file, f"{file_id}:{file_name}"))
