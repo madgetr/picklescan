@@ -444,6 +444,11 @@ def initialize_pickle_files():
         "data.pkl",
         pickle.dumps(Malicious1(), protocol=4),
     )
+    initialize_zip_file(
+        f"{_root_path}/data/non_pickle_ext_in_malicious1.zip",
+        "data.txt",
+        pickle.dumps(Malicious1(), protocol=4),
+    )
 
     # Fake PyTorch file (PNG file format) simulating https://huggingface.co/RectalWorm/loras_new/blob/main/Owl_Mage_no_background.pt
     initialize_data_file(f"{_root_path}/data/bad_pytorch.pt", b"\211PNG\r\n\032\n")
@@ -597,6 +602,9 @@ def test_scan_file_path():
     )
     compare_scan_results(
         scan_file_path(f"{_root_path}/data/malicious_corrupt1.zip"), malicious1
+    )
+    compare_scan_results(
+        scan_file_path(f"{_root_path}/data/non_pickle_ext_in_malicious1.zip"), malicious1
     )
 
     malicious2 = ScanResult([Global("posix", "system", SafetyLevel.Dangerous)], 1, 1, 1)
@@ -777,10 +785,11 @@ def test_scan_directory_path():
             Global("builtins", "exec", SafetyLevel.Dangerous),
             Global("builtins", "eval", SafetyLevel.Dangerous),
             Global("builtins", "eval", SafetyLevel.Dangerous),
+            Global("builtins", "eval", SafetyLevel.Dangerous),
         ],
-        scanned_files=33,
-        issues_count=33,
-        infected_files=28,
+        scanned_files=34,
+        issues_count=34,
+        infected_files=29,
         scan_err=True,
     )
     compare_scan_results(scan_directory_path(f"{_root_path}/data/"), sr)
