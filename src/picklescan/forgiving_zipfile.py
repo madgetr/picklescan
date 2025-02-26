@@ -35,6 +35,7 @@ sizeFileHeader = struct.calcsize(structFileHeader)
 class ForgivingZipFile(zipfile.ZipFile):
 
     def open(self, name, mode="r", pwd=None, *, force_zip64=False):
+        # near copy of zipfile.ZipFile.open with
         """Return file-like object for 'name'.
 
         name is a string for the file name within the ZIP file, or a ZipInfo
