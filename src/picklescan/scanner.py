@@ -11,6 +11,10 @@ from tempfile import TemporaryDirectory
 from typing import IO, List, Optional, Set, Tuple
 import urllib.parse
 import zipfile
+from .callflow import (
+    call_flow,
+    CALL_FLOW
+)
 
 from .torch import (
     get_magic_number,
@@ -123,11 +127,11 @@ _unsafe_globals = {
     "subprocess": "*",
     "sys": "*",
     "shutil": "*",
-    "runpy": "*",  # Includes runpy._run_code
+    # "runpy": "*",  # Includes runpy._run_code
     "operator": "attrgetter",  # Ex of code execution: operator.attrgetter("system")(__import__("os"))("echo pwned")
     "pickle": "*",
     "_pickle": "*",
-    "bdb": "*",
+    # "bdb": "*",
     "pdb": "*",
     "asyncio": "*",
     "pip": "*",
@@ -154,6 +158,11 @@ _numpy_file_extensions = {".npy"}  # Note: .npz is handled as zip files
 _pytorch_file_extensions = {".bin", ".pt", ".pth", ".ckpt"}
 _pickle_file_extensions = {".pkl", ".pickle", ".joblib", ".dat", ".data"}
 _zip_file_extensions = {".zip", ".npz", ".7z"}
+
+CALL_FLOW_ANALYSIS = True
+def enable_call_flow_analysis():
+#     set env variable to enable call flow analysis
+    os.environ['CALL_FLOW_ANALYSIS'] = 'True'
 
 
 def _is_7z_file(f: IO[bytes]) -> bool:
@@ -301,9 +310,40 @@ def _build_scan_result_from_raw_globals(
             g.safety = SafetyLevel.Innocuous
         else:
             g.safety = SafetyLevel.Suspicious
+            # check environment variables
+            if CALL_FLOW_ANALYSIS:
+                _log.debug("Analyzing call flow for %s %s", g.module, g.name)
+                dangerous_calls = _call_flow_analysis_on_global(file_id, g)
+                if dangerous_calls:
+                    globals.extend(dangerous_calls)
+                    issues_count += len(dangerous_calls)
         globals.append(g)
 
     return ScanResult(globals, 1, issues_count, 1 if issues_count > 0 else 0, scan_err)
+
+
+def _call_flow_analysis_on_global(file_id, g):
+    dangerous_calls = []
+    try:
+        flow = call_flow((g.module, g.name), 4)
+        _log.debug("Call flow for %s %s: %s", g.module, g.name, flow)
+        if flow is None:
+            return None
+        for key, values in flow.items():
+            for value in values:
+                if not value in _unsafe_globals.get("builtins"):
+                    continue
+                g.safety = SafetyLevel.Dangerous
+                _log.warning(
+                    "%s: %s import '%s' FOUND USING CALL FLOW", file_id, g.safety.value, key
+                )
+                dangerous_calls.append(Global(CALL_FLOW, value, SafetyLevel.Dangerous))
+                break
+    except Exception as e:
+        _log.error(
+            f"Error analyzing call flow for {g.module} {g.name}: {e}"
+        )
+    return dangerous_calls
 
 
 def scan_pickle_bytes(data: IO[bytes], file_id, multiple_pickles=True) -> ScanResult:

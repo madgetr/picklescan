@@ -7,6 +7,7 @@ from .scanner import ScanResult, scan_directory_path
 from .scanner import scan_file_path
 from .scanner import scan_url
 from .scanner import scan_huggingface_model
+from .scanner import enable_call_flow_analysis
 
 _log = logging.getLogger("picklescan")
 
@@ -55,6 +56,9 @@ def main():
         dest="log_level",
         choices=["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"],
     )
+    parser.add_argument(
+        "-cf", "--callflow", help="preform call flow analysis", action="store_true"
+    )
 
     args = parser.parse_args()
 
@@ -62,6 +66,8 @@ def main():
         _log.setLevel(getattr(logging, args.log_level))
 
     try:
+        if args.callflow:
+            enable_call_flow_analysis()
         if args.path is not None:
             path = os.path.abspath(args.path)
             if not os.path.exists(path):

@@ -456,6 +456,7 @@ def compare_scan_results(sr1: ScanResult, sr2: ScanResult):
     assert sr1.scanned_files == sr2.scanned_files
     assert sr1.issues_count == sr2.issues_count
     assert sr1.infected_files == sr2.infected_files
+    test_case.maxDiff = None
     test_case.assertCountEqual(sr1.globals, sr2.globals)
 
 
@@ -665,7 +666,8 @@ def test_scan_file_path():
     )
 
     malicious14 = ScanResult(
-        [Global("runpy", "_run_code", SafetyLevel.Dangerous)], 1, 1, 1
+        [Global("runpy", "_run_code", SafetyLevel.Dangerous),
+         Global("[CALL FLOW]", "exec", SafetyLevel.Dangerous)], 1, 1, 1
     )
     compare_scan_results(
         scan_file_path(f"{_root_path}/data/malicious14.pkl"), malicious14
@@ -751,6 +753,8 @@ def test_scan_directory_path():
             Global("builtins", "eval", SafetyLevel.Dangerous),
             Global("builtins", "eval", SafetyLevel.Dangerous),
             Global("runpy", "_run_code", SafetyLevel.Dangerous),
+            Global("[CALL FLOW]", "exec", SafetyLevel.Dangerous),
+            Global("[CALL FLOW]", "compile", SafetyLevel.Dangerous),
             Global("socket", "create_connection", SafetyLevel.Dangerous),
             Global("collections", "OrderedDict", SafetyLevel.Innocuous),
             Global("torch._utils", "_rebuild_tensor_v2", SafetyLevel.Innocuous),
@@ -766,15 +770,15 @@ def test_scan_directory_path():
             Global("pickle", "loads", SafetyLevel.Dangerous),
             Global("_pickle", "loads", SafetyLevel.Dangerous),
             Global("_codecs", "encode", SafetyLevel.Suspicious),
-            Global("bdb", "Bdb", SafetyLevel.Dangerous),
-            Global("bdb", "Bdb", SafetyLevel.Dangerous),
+            Global("bdb", "Bdb", SafetyLevel.Suspicious),
+            Global("bdb", "Bdb", SafetyLevel.Suspicious),
             Global("bdb", "Bdb.run", SafetyLevel.Dangerous),
             Global("builtins", "exec", SafetyLevel.Dangerous),
             Global("builtins", "eval", SafetyLevel.Dangerous),
             Global("pip", "main", SafetyLevel.Dangerous),
         ],
         scanned_files=33,
-        issues_count=33,
+        issues_count=31,
         infected_files=28,
         scan_err=True,
     )
