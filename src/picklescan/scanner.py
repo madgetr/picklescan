@@ -11,6 +11,9 @@ from tempfile import TemporaryDirectory
 from typing import IO, List, Optional, Set, Tuple
 import urllib.parse
 import zipfile
+import ast
+import inspect
+import sys
 
 from .torch import (
     get_magic_number,
@@ -123,8 +126,8 @@ _unsafe_globals = {
     "subprocess": "*",
     "sys": "*",
     "shutil": "*",
-    "runpy": "*",  # Includes runpy._run_code
-    "operator": "attrgetter",  # Ex of code execution: operator.attrgetter("system")(__import__("os"))("echo pwned")
+    # "runpy": "*",  # Includes runpy._run_code
+    # "operator": "attrgetter",  # Ex of code execution: operator.attrgetter("system")(__import__("os"))("echo pwned")
     "pickle": "*",
     "_pickle": "*",
     "bdb": "*",
@@ -302,7 +305,19 @@ def _build_scan_result_from_raw_globals(
         else:
             g.safety = SafetyLevel.Suspicious
         globals.append(g)
-
+        try:
+            in_global = _dangerous_functions_in_global(g.module, g.name)
+            if in_global:
+                _log.debug(
+                    "%s: %s import %s FOUND in %s", file_id, in_global, g.module, g.name
+                )
+                for f in in_global:
+                    globals.append(Global(g.module, f'{g.name}.{f} [FROM AST]', SafetyLevel.Dangerous))
+                    issues_count += 1
+        except TypeError as e:
+            _log.debug(
+                "%s: %s import %s not found in %s", file_id, e, g.module, g.name
+            )
     return ScanResult(globals, 1, issues_count, 1 if issues_count > 0 else 0, scan_err)
 
 
@@ -348,6 +363,82 @@ def scan_7z_bytes(data: IO[bytes], file_id) -> ScanResult:
                     result.merge(scan_file_path(file_path))
 
             return result
+
+def _getattribute(obj, name):
+    parent = None
+    for subpath in name.split('.'):
+        if subpath == '<locals>':
+            raise AttributeError("Can't get local attribute {!r} on {!r}"
+                                 .format(name, obj))
+        try:
+            parent = obj
+            obj = getattr(obj, subpath)
+        except AttributeError:
+            raise AttributeError("Can't get attribute {!r} on {!r}"
+                                 .format(name, obj)) from None
+    return obj, parent
+
+def _dangerous_functions_in_global(module, name):
+    tree = _get_ast(module, name)
+    if tree is None:
+        return set()
+    return _find_dangerous_functions(tree)
+
+def _get_ast(module, name):
+    try:
+        if module in {"builtins", "__builtin__"}:
+            return None
+
+        __import__(module)
+
+        attr, parent = _getattribute(sys.modules[module], name)
+
+        # If attr is a class, analyze its methods
+        if inspect.isclass(attr):
+            source = inspect.getsource(attr)
+        elif inspect.isfunction(attr) or inspect.ismethod(attr):
+            source = inspect.getsource(attr)
+        else:
+            return None  # Ignore non-code objects
+
+        return ast.parse(source)
+
+    except Exception as e:
+        _log.debug(f"Error getting AST for {module}.{name}: {e}")
+        return None
+
+
+def _find_dangerous_functions(tree):
+    dangerous_functions = set()
+    _unsafe_functions = _unsafe_globals.get("builtins", set())
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Attribute):
+                _log.debug("FUNC: %s", node.func.attr)
+                if node.func.attr in _unsafe_functions:
+                    dangerous_functions.add(node.func.attr)
+            elif isinstance(node.func, ast.Name):
+                _log.debug("FUNC: %s", node.func.id)
+                if node.func.id in _unsafe_functions:
+                    dangerous_functions.add(node.func.id)
+        elif isinstance(node, ast.ImportFrom):
+            # check if node.module is in the unsafe modules
+            if node.module in _unsafe_globals:
+                for alias in node.names:
+                    _log.debug("IMPORT: %s", f"{node.module}.{alias.name}")
+                    if alias.name == "*":
+                        dangerous_functions.add(f"{node.module}.*")
+                    elif alias.name in _unsafe_globals[node.module]:
+                        dangerous_functions.add(f"{node.module}.{alias.name}")
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                _log.debug("IMPORT: %s", alias.name)
+                if alias.name in _unsafe_globals:
+                    dangerous_functions.add(alias.name)
+
+    return dangerous_functions
+
 
 
 def scan_zip_bytes(data: IO[bytes], file_id) -> ScanResult:
