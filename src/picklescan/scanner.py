@@ -302,6 +302,8 @@ def _build_scan_result_from_raw_globals(
             issues_count += 1
         elif safe_filter is not None and (safe_filter == "*" or g.name in safe_filter):
             g.safety = SafetyLevel.Innocuous
+            globals.append(g)
+            continue
         else:
             g.safety = SafetyLevel.Suspicious
         globals.append(g)
@@ -365,81 +367,141 @@ def scan_7z_bytes(data: IO[bytes], file_id) -> ScanResult:
             return result
 
 def _getattribute(obj, name):
+    """Retrieve an attribute from an object, handling dotted paths."""
     parent = None
     for subpath in name.split('.'):
         if subpath == '<locals>':
-            raise AttributeError("Can't get local attribute {!r} on {!r}"
-                                 .format(name, obj))
+            raise AttributeError(f"Can't get local attribute {name!r} on {obj!r}")
         try:
             parent = obj
             obj = getattr(obj, subpath)
         except AttributeError:
-            raise AttributeError("Can't get attribute {!r} on {!r}"
-                                 .format(name, obj)) from None
+            raise AttributeError(f"Can't get attribute {name!r} on {obj!r}") from None
     return obj, parent
 
-def _dangerous_functions_in_global(module, name):
-    tree = _get_ast(module, name)
-    if tree is None:
-        return set()
-    return _find_dangerous_functions(tree)
-
 def _get_ast(module, name):
+    """Retrieve and parse the AST of a function or class method, with recursive call tracking."""
     try:
         if module in {"builtins", "__builtin__"}:
-            return None
+            return None, set()
 
         __import__(module)
-
-        attr, parent = _getattribute(sys.modules[module], name)
-
-        # If attr is a class, analyze its methods
+        attr, _ = _getattribute(sys.modules[module], name)
+        if inspect.isbuiltin(attr):
+            return None, set()
         if inspect.isclass(attr):
-            source = inspect.getsource(attr)
+            try:
+                source = inspect.getsource(attr)
+            except OSError:  # Handle case where source is not available
+                _log.warning(f"Unable to get source for class {name} in {module}")
+                return None, set()
         elif inspect.isfunction(attr) or inspect.ismethod(attr):
-            source = inspect.getsource(attr)
+            try:
+                source = inspect.getsource(attr)
+            except OSError:  # Handle case where source is not available
+                _log.warning(f"Unable to get source for function {name} in {module}")
+                return None, set()
         else:
-            return None  # Ignore non-code objects
+            return None, set()  # Ignore non-code objects
 
-        return ast.parse(source)
+        tree = ast.parse(source)
+
+        # Recursively analyze called functions
+        called_functions = _expand_ast_recursively(tree, module)
+
+        return tree, called_functions
 
     except Exception as e:
-        _log.debug(f"Error getting AST for {module}.{name}: {e}")
-        return None
+        # _log.debug(f"Error getting AST for {module}.{name}: {e}")
+        return None, set()
 
 
-def _find_dangerous_functions(tree):
-    dangerous_functions = set()
-    _unsafe_functions = _unsafe_globals.get("builtins", set())
+def _expand_ast_recursively(tree, module):
+    """Expand the AST by resolving and analyzing function calls within the module."""
+    new_nodes = []
+
+    called_functions = _find_function_calls(tree)
+    if _find_dangerous_functions(called_functions):
+        return called_functions
+    sub_called = set()
+    for called_func in called_functions:
+        resolved_func = _resolve_function_name(module, called_func)
+        if not resolved_func:
+            continue
+
+        # Extract AST for the function
+        sub_tree, sub_called = _get_ast(module, resolved_func)
+        if sub_tree:
+            new_nodes.extend(sub_tree.body)
+
+    if isinstance(tree, ast.Module):
+        tree.body.extend(new_nodes)
+    called_functions.update(sub_called)
+    return called_functions
+
+
+def _resolve_function_name(module, func_name):
+    """Try to resolve a function name within the module."""
+    try:
+        obj, _ = _getattribute(sys.modules[module], func_name)
+        if inspect.isfunction(obj) or inspect.ismethod(obj) or inspect.isclass(obj):
+            return func_name
+    except AttributeError:
+        # _log.error(f"Function {module}.{func_name} not found")
+        pass
+    return None
+
+def _find_function_calls(tree):
+    """Extract function calls from an AST tree with full names."""
+    called_functions = set()
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
-            if isinstance(node.func, ast.Attribute):
-                _log.debug("FUNC: %s", node.func.attr)
-                if node.func.attr in _unsafe_functions:
-                    dangerous_functions.add(node.func.attr)
-            elif isinstance(node.func, ast.Name):
-                _log.debug("FUNC: %s", node.func.id)
-                if node.func.id in _unsafe_functions:
-                    dangerous_functions.add(node.func.id)
-        elif isinstance(node, ast.ImportFrom):
-            # check if node.module is in the unsafe modules
-            if node.module in _unsafe_globals:
-                for alias in node.names:
-                    _log.debug("IMPORT: %s", f"{node.module}.{alias.name}")
-                    if alias.name == "*":
-                        dangerous_functions.add(f"{node.module}.*")
-                    elif alias.name in _unsafe_globals[node.module]:
-                        dangerous_functions.add(f"{node.module}.{alias.name}")
-        elif isinstance(node, ast.Import):
-            for alias in node.names:
-                _log.debug("IMPORT: %s", alias.name)
-                if alias.name in _unsafe_globals:
-                    dangerous_functions.add(alias.name)
+            if isinstance(node.func, ast.Attribute):  # e.g., builder.create()
+                # Try to reconstruct full name, including the object
+                full_name = _get_full_attribute_name(node.func)
+                if full_name:
+                    called_functions.add(full_name)
+            elif isinstance(node.func, ast.Name):  # e.g., setup_python()
+                called_functions.add(node.func.id)
 
+    return called_functions
+
+def _get_full_attribute_name(node):
+    """Recursively reconstruct full attribute names (e.g., builder.create)."""
+    if isinstance(node, ast.Attribute):
+        parent = _get_full_attribute_name(node.value)
+        return f"{parent}.{node.attr}" if parent else node.attr
+    elif isinstance(node, ast.Name):
+        return node.id
+    return None
+
+def _find_dangerous_functions(called_functions):
+    """Find dangerous functions in an AST tree."""
+    dangerous_functions = set()
+    _unsafe_functions = _unsafe_globals.get("builtins", set())
+    for function in called_functions:
+        _log.debug(f"Checking function {function}")
+        if '.' not in function:
+            # if function in _unsafe_functions:
+            #     dangerous_functions.add(function)
+            continue
+        module, name = function.split(".", 1)
+        if name is None or name == "":
+            continue
+        if module in _unsafe_globals:
+            # if name in _unsafe_globals[module]:
+            #     dangerous_functions.add(name)
+            if _unsafe_globals[module] == "*":
+                dangerous_functions.add(module)
     return dangerous_functions
 
-
+def _dangerous_functions_in_global(module, name):
+    """Check if a given function contains dangerous calls, following recursive function calls."""
+    tree, called_functions = _get_ast(module, name)
+    if tree is None:
+        return set()
+    return _find_dangerous_functions(called_functions)
 
 def scan_zip_bytes(data: IO[bytes], file_id) -> ScanResult:
     result = ScanResult([])
